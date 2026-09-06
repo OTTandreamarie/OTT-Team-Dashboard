@@ -13,6 +13,12 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 ----------------------------------------------------------------*/
 
 const STORAGE_KEY = "team-pulse-months-v1";
+const SUPABASE_URL = "https://tfukyqdnpubnvfpezdyt.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_jolhtMEKNIEiTas2Jl6sQg_VNHU_5oU";
+const supabaseClient = typeof window !== "undefined" && window.supabase?.createClient
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+  : null;
+
 
 const STATUS = {
   stable: { label: "Stable", color: "#3f7d5c", bg: "#eaf3ee", ring: "#bfe0cf", icon: CheckCircle2 },
@@ -298,9 +304,9 @@ function PersonCard({ person, phase, onUpdate, onDelete, readOnly }) {
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
         onClick={() => setOpen((o) => !o)}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
           {open ? <ChevronDown size={16} className="shrink-0 text-slate-400" /> : <ChevronRight size={16} className="shrink-0 text-slate-400" />}
-          <span className="shrink-0 font-semibold text-slate-800">{person.name}</span>
+          <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">{person.name}</span>
           {person.workload && (
             <span className="hidden shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 sm:inline">
               {person.workload}
@@ -767,7 +773,7 @@ function ImportModal({ onImport, onClose }) {
 
 function ShareLinkModal({ link, onClose }) {
   const copy = async () => { try { await navigator.clipboard.writeText(link); alert("Viewer link copied!"); } catch { alert(link); } };
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"><div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl"><h3 className="text-lg font-bold text-slate-900">Viewer link ready</h3><p className="mt-2 text-sm text-slate-500">Send this link to Ash. The current dashboard snapshot is stored in the link, not in the public GitHub repository.</p><textarea readOnly value={link} className="mt-4 h-28 w-full rounded-lg border border-slate-200 p-3 text-xs text-slate-600"/><div className="mt-4 flex justify-end gap-2"><button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Close</button><button onClick={copy} className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white">Copy link</button></div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"><div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl"><h3 className="text-lg font-bold text-slate-900">Viewer link ready</h3><p className="mt-2 text-sm text-slate-500">Send this link to Ash. The current dashboard snapshot is stored securely in the dashboard database. Ash can view it without an account.</p><textarea readOnly value={link} className="mt-4 h-28 w-full rounded-lg border border-slate-200 p-3 text-xs text-slate-600"/><div className="mt-4 flex justify-end gap-2"><button onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Close</button><button onClick={copy} className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white">Copy link</button></div></div></div>;
 }
 
 function ExportModal({ data, onClose }) {
@@ -820,29 +826,27 @@ function ExportModal({ data, onClose }) {
 function getModeFromLocation() {
   if (typeof window === "undefined") return "admin";
   const params = new URLSearchParams(window.location.search);
-  if (params.get("view") === "1" || window.location.hash.startsWith("#view=")) return "viewer";
-  return "admin";
+  return params.get("view") === "1" && params.get("token") ? "viewer" : "admin";
 }
 
-function decodeSharedData() {
-  if (typeof window === "undefined") return null;
-  const hash = window.location.hash || "";
-  if (!hash.startsWith("#view=")) return null;
-  try {
-    const encoded = decodeURIComponent(hash.slice(6));
-    const raw = window.LZString?.decompressFromEncodedURIComponent(encoded) || encoded;
-    return JSON.parse(raw);
-  } catch (e) { return null; }
+function getViewerToken() {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("token") || "";
 }
 
-function publishLink(data) {
-  const json = JSON.stringify(data);
-  const encoded = window.LZString?.compressToEncodedURIComponent(json) || encodeURIComponent(json);
-  return `${window.location.origin}${window.location.pathname}#view=${encoded}`;
+function makeShareToken() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function makeViewerLink(token) {
+  const base = window.location.origin + window.location.pathname.replace(/\/$/, "");
+  return `${base}/?view=1&token=${encodeURIComponent(token)}`;
 }
 
 export default function TeamPulseDashboard() {
   const urlView = getModeFromLocation() === "viewer";
+  const viewerToken = getViewerToken();
   const [months, setMonths] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [showAddMonth, setShowAddMonth] = useState(false);
@@ -851,28 +855,144 @@ export default function TeamPulseDashboard() {
   const [shareLink, setShareLink] = useState("");
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(!urlView);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [publishing, setPublishing] = useState(false);
 
   const readOnly = urlView;
 
   useEffect(() => {
-    try {
-      const shared = decodeSharedData();
-      if (shared?.byId) {
-        setMonths(shared);
-        setActiveId(shared.order[shared.order.length - 1]);
-      } else if (!urlView) {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          setMonths(parsed);
-          setActiveId(parsed.order[parsed.order.length - 1]);
-        }
+    if (urlView) {
+      setAuthLoading(false);
+      return;
+    }
+    if (!supabaseClient) {
+      setLoginError("The dashboard connection is unavailable.");
+      setAuthLoading(false);
+      return;
+    }
+    let active = true;
+    supabaseClient.auth.getSession().then(({ data }) => {
+      if (active) {
+        setSession(data.session);
+        setAuthLoading(false);
       }
-    } catch (e) { setLoadError(true); }
-    finally { setReady(true); }
+    });
+    const { data: listener } = supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
+      if (active) setSession(nextSession);
+    });
+    return () => {
+      active = false;
+      listener?.subscription?.unsubscribe();
+    };
   }, [urlView]);
 
-  useDebouncedSave(months, ready && months);
+  useEffect(() => {
+    if (!urlView) return;
+    let cancelled = false;
+    const loadViewer = async () => {
+      if (!supabaseClient || !viewerToken) {
+        setLoadError(true);
+        setReady(true);
+        return;
+      }
+      try {
+        const { data, error } = await supabaseClient.rpc("get_dashboard_snapshot", { p_token: viewerToken });
+        if (error) throw error;
+        if (!data?.byId || !Array.isArray(data.order)) throw new Error("Snapshot not found");
+        if (!cancelled) {
+          setMonths(data);
+          setActiveId(data.order[data.order.length - 1]);
+        }
+      } catch (e) {
+        console.error("Viewer load failed", e);
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setReady(true);
+      }
+    };
+    loadViewer();
+    return () => { cancelled = true; };
+  }, [urlView, viewerToken]);
+
+  useEffect(() => {
+    if (urlView || !session) return;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setMonths(parsed);
+        setActiveId(parsed.order[parsed.order.length - 1]);
+      }
+    } catch (e) {
+      console.error(e);
+      setLoadError(true);
+    } finally {
+      setReady(true);
+    }
+  }, [urlView, session]);
+
+  useDebouncedSave(months, ready && !urlView && !!session);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError("");
+    if (!supabaseClient) return;
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) {
+      setLoginError(error.message);
+      return;
+    }
+    setSession(data.session);
+  };
+
+  const handleLogout = async () => {
+    await supabaseClient?.auth.signOut();
+    setSession(null);
+    setMonths(null);
+    setReady(false);
+  };
+
+  const publishViewerLink = async () => {
+    if (!supabaseClient || !session || !months) return;
+    setPublishing(true);
+    try {
+      const token = makeShareToken();
+      const { error } = await supabaseClient.rpc("save_dashboard_snapshot", { p_token: token, p_data: months });
+      if (error) throw error;
+      setShareLink(makeViewerLink(token));
+    } catch (e) {
+      console.error(e);
+      alert(`Couldn't publish the viewer link: ${e.message || e}`);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  if (authLoading) {
+    return <div className="min-h-screen bg-[#f7f8f6] px-4 py-12 font-sans text-slate-800"><div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-teal-700"><Heart size={13}/> Team Pulse</div><p className="text-sm text-slate-500">Checking admin access…</p></div></div>;
+  }
+
+  if (!urlView && !session) {
+    return (
+      <div className="min-h-screen bg-[#f7f8f6] px-4 py-12 font-sans text-slate-800">
+        <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-teal-700"><Heart size={13}/> Team Pulse</div>
+          <h1 className="text-xl font-bold text-slate-900">Admin sign in</h1>
+          <p className="mt-2 text-sm text-slate-500">Sign in to edit the dashboard and publish a viewer link.</p>
+          <form onSubmit={handleLogin} className="mt-5 space-y-3">
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="Email" autoComplete="email" required className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-teal-500" />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Password" autoComplete="current-password" required className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-teal-500" />
+            {loginError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{loginError}</div>}
+            <button type="submit" className="w-full rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-900">Sign in</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   if (!months) {
     return (
@@ -880,7 +1000,7 @@ export default function TeamPulseDashboard() {
         <div className="mx-auto max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-teal-700"><Heart size={13}/> Team Pulse</div>
           <h1 className="text-xl font-bold">{urlView ? "Shared dashboard unavailable" : "Set up your dashboard"}</h1>
-          <p className="mt-2 text-sm text-slate-500">{urlView ? "This viewer link does not contain a valid dashboard snapshot." : "Import your existing Team Pulse JSON backup. Your editable data stays in this browser and is not stored in the public GitHub repository."}</p>
+          <p className="mt-2 text-sm text-slate-500">{urlView ? "This viewer link is invalid, expired, or unavailable." : "Import your existing Team Pulse JSON backup. Your editable data stays in this browser and is not stored in the public GitHub repository."}</p>
           {!urlView && <button onClick={() => setShowImport(true)} className="mt-5 rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white">Import dashboard data</button>}
         </div>
         {showImport && <ImportModal onImport={(data) => { setMonths(data); setActiveId(data.order[data.order.length - 1]); setShowImport(false); }} onClose={() => setShowImport(false)} />}
@@ -906,57 +1026,32 @@ export default function TeamPulseDashboard() {
   return (
     <div className="min-h-full w-full bg-[#f7f8f6] font-sans text-slate-800" style={{ fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}>
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
-        {/* Header */}
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-teal-700">
-              <Heart size={13} /> Team Pulse
-            </div>
+            <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-teal-700"><Heart size={13} /> Team Pulse</div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Monthly 1:1 Dashboard</h1>
-              {readOnly && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                  <Eye size={12} /> View only
-                </span>
-              )}
+              {readOnly && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-slate-500"><Eye size={12} /> View only</span>}
             </div>
-            <p className="mt-1 max-w-xl text-sm text-slate-500">
-              Apr–Jun tracked capacity &amp; wellbeing. From Jul onward, project updates are added too.
-            </p>
+            <p className="mt-1 max-w-xl text-sm text-slate-500">Apr–Jun tracked capacity &amp; wellbeing. From Jul onward, project updates are added too.</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {!readOnly && <>
               <button onClick={() => setShowImport(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50">Import</button>
               <button onClick={() => setShowExport(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50"><Save size={15}/> Backup</button>
-              <button onClick={() => setShareLink(publishLink(months))} className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800"><Eye size={15}/> Publish viewer link</button>
+              <button onClick={publishViewerLink} disabled={publishing} className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"><Eye size={15}/> {publishing ? "Publishing…" : "Publish viewer link"}</button>
               <button onClick={() => setShowAddMonth(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-900"><CalendarPlus size={15}/> Add month</button>
+              <button onClick={handleLogout} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-50">Sign out</button>
             </>}
           </div>
         </div>
 
-        {loadError && (
-          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            Couldn't read your saved data, so this is starting fresh from the built-in seed months.
-          </div>
-        )}
+        {loadError && <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">{urlView ? "This viewer link could not load the dashboard snapshot." : "Couldn't read your saved data, so please import your Team Pulse JSON backup."}</div>}
 
-        {/* Month tabs */}
         <div className="mb-6 flex flex-wrap gap-2 border-b border-slate-200 pb-3">
           {orderedMonths.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setActiveId(m.id)}
-              className="rounded-lg px-3.5 py-2 text-sm font-semibold transition"
-              style={
-                active.id === m.id
-                  ? { background: "#1e293b", color: "white" }
-                  : { background: "white", color: "#64748b", border: "1px solid #e2e8f0" }
-              }
-            >
-              {m.label} {m.year !== 2026 ? m.year : ""}
-              {m.people.length === 0 && (
-                <span className="ml-1.5 opacity-60">·&nbsp;empty</span>
-              )}
+            <button key={m.id} onClick={() => setActiveId(m.id)} className="rounded-lg px-3.5 py-2 text-sm font-semibold transition" style={active.id === m.id ? { background: "#1e293b", color: "white" } : { background: "white", color: "#64748b", border: "1px solid #e2e8f0" }}>
+              {m.label} {m.year !== 2026 ? m.year : ""}{m.people.length === 0 && <span className="ml-1.5 opacity-60">·&nbsp;empty</span>}
             </button>
           ))}
         </div>
@@ -966,15 +1061,13 @@ export default function TeamPulseDashboard() {
         <MonthPanel key={active.id} month={active} onUpdateMonth={updateMonth} readOnly={readOnly} />
       </div>
 
-      {showAddMonth && (
-        <AddMonthModal onAdd={addMonth} onClose={() => setShowAddMonth(false)} existingCount={orderedMonths.length} />
-      )}
+      {showAddMonth && <AddMonthModal onAdd={addMonth} onClose={() => setShowAddMonth(false)} existingCount={orderedMonths.length} />}
       {showExport && <ExportModal data={months} onClose={() => setShowExport(false)} />}
       {showImport && <ImportModal onImport={(data) => { setMonths(data); setActiveId(data.order[data.order.length - 1]); setShowImport(false); }} onClose={() => setShowImport(false)} />}
       {shareLink && <ShareLinkModal link={shareLink} onClose={() => setShareLink("")} />}
 
-      <div className="mx-auto max-w-5xl px-4 pb-10 pt-2 text-center text-[11px] text-slate-400 sm:px-6">
-        View-only snapshot · editing is disabled
+      <div className="mx-auto max-w-5xl px-4 pb-10 pt-2 text-center text-[11px] text-slate-400">
+        {readOnly ? "View-only snapshot · editing is disabled" : `Admin · signed in as ${session?.user?.email || ""}`}
       </div>
     </div>
   );
