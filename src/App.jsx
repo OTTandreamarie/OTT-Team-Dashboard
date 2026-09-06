@@ -305,7 +305,7 @@ function PersonCard({ person, phase, onUpdate, onDelete, readOnly }) {
       >
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           {open ? <ChevronDown size={16} className="shrink-0 text-slate-400" /> : <ChevronRight size={16} className="shrink-0 text-slate-400" />}
-          <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">{person.name}</span>
+          <span className="w-24 shrink-0 truncate font-semibold text-slate-800">{person.name}</span>
           {person.workload && (
             <span className="hidden shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 sm:inline">
               {person.workload}
